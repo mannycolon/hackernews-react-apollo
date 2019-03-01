@@ -15,6 +15,10 @@ class Header extends Component {
             new
           </Link>
           <div className="ml1">|</div>
+          <Link to="/" className="ml1 no-underline black">
+            top
+          </Link>
+          <div className="ml1">|</div>
           <Link to="/search" className="ml1 no-underline black">
             Search
           </Link>
