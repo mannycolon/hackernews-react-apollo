@@ -1,0 +1,18 @@
+
+type Query {
+  info: String!
+  feed: [Link!]!
+  link(id: String!): Link! # Fetch a single link by its `id`
+}
+
+type Mutation {
+  post(url: String!, description: String!): Link!
+  updateLink(id: ID!, url: String, description: String): Link
+  deleteLink(id: ID!): Link
+}
+
+type Link {
+id: ID!
+url: String!
+description: String!
+}
