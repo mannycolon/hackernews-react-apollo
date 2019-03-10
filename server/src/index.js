@@ -1,48 +1,35 @@
 const { GraphQLServer } = require('graphql-yoga')
+const { prisma } = require('./generated/prisma-client')
 
-let links = [{
-  id: 'link-0',
-  url: 'www.howtographql.com',
-  description: 'Fullstack tutorial for GraphQL'
-}]
-
-let idCount = links.length
 const resolvers = {
   Query: {
     info: () => 'This is the API of a Hackernews Clone',
-    feed: () => links,
-    link: (parent, args) => {
-      const link = links.find((link) => link.id === args.id)
-      return link
+    feed: (parent, args, context, info) => {
+      return context.prisma.links()
     },
   },
   Mutation: {
-    post: (parent, args) => {// args: carries the arguments for the operation
-      const link = {
-        id: `link-${idCount++}`,
+    post: (parent, args, context) => {// args: carries the arguments for the operation
+      return context.prisma.createLink({
         url: args.url,
         description: args.description,
-      }
-
-      links.push(link)
-
-      return link
+      })
     },
-    updateLink: (parent, args) => {
-      const link = links.find(link => link.id === args.id)
-      link.url = args.url
-      link.description = args.description
+    // updateLink: (parent, args) => {
+    //   const link = links.find(link => link.id === args.id)
+    //   link.url = args.url
+    //   link.description = args.description
 
-      return link
-    },
-    deleteLink: (parent, args) => {
-      const link = links.find(link => link.id === args.id)
-      const index = links.indexOf(link)
+    //   return link
+    // },
+    // deleteLink: (parent, args) => {
+    //   const link = links.find(link => link.id === args.id)
+    //   const index = links.indexOf(link)
 
-      links.splice(index, 1)
+    //   links.splice(index, 1)
 
-      return link
-    }
+    //   return link
+    // }
   }
   // In any case, because the implementation of the Link resolvers is trivial, 
   // you can actually omit them and the server will work in the same way as it did before 👌
@@ -57,7 +44,8 @@ const resolvers = {
 // This tells the server what API operations are accepted and how they should be resolved.
 const server = new GraphQLServer({
   typeDefs: './src/schema.graphql', // One convenient thing about the constructor of the GraphQLServer is that typeDefs can be provided either directly as a string or by referencing a file that contains your schema definition 
-  resolvers
+  resolvers,
+  context: { prisma },
 })
 
 /**

@@ -101,3 +101,95 @@ main().catch(e => console.error(e))
 Notice that the generated directory also contains a file with TypeScript definitions (`index.d.ts`). This file is there so that your IDE (i.e. Visual Studio Code) can help you with auto-completion when reading and writing data using the Prisma client:
 
 ![Prisma client auto-completion example](https://imgur.com/kwGNPN4.png "Prisma client auto-completion example")
+
+## Connecting Server and Database with the Prisma Client
+
+Connecting the GraphQL server with the Prisma API, which provides the interface to your database, via the Prisma client.
+
+### Updating the resolver functions to use Prisma client
+
+Using prisma via the context argument.
+
+```js
+const resolvers = {
+  Query: {
+    info: () => `This is the API of a Hackernews Clone`,
+    feed: (root, args, context, info) => {
+      return context.prisma.links()
+    },
+  },
+  Mutation: {
+    post: (root, args, context) => {
+      return context.prisma.createLink({
+        url: args.url,
+        description: args.description,
+      })
+    },
+  },
+}
+```
+
+### The `context` argument
+
+The `context` argument is a plain JavaScript object that every resolver in the resolver chain can read from and write to - it thus basically is a means for resolvers to communicate. As you’ll see in a bit, it’s also possible to already write to it at the moment when the GraphQL server itself is being initialized. So, it’s also a way for you to pass arbitrary data or functions to the resolvers. In this case, you’re going to attach this `prisma` client instance to the `context` - more about that soon.
+
+Now that you have a basic understanding of the arguments that are passed into the resolver, let’s see how they’re being used inside the implementation of the resolver function.
+
+### Understanding the `feed` resolver
+
+The `feed` resolver is implemented as follows:
+
+```js
+feed: (root, args, context, info) => {
+  return context.prisma.links()
+},
+```
+
+It accesses a `prisma` object on `context`. As you will see in a bit, this `prisma` object actually is a `Prisma` client instance that’s imported from the generated `prisma-client` library.
+
+This `Prisma` client instance effectively lets you access your database through the Prisma API. It exposes a number of methods that let you perform CRUD operations for your models.
+
+So, to summarize, Prisma client exposes a CRUD API for the models in your datamodel for you to read and write in your database. These methods are auto-generated based on your model definitions in `datamodel.prisma`.
+
+But, how do you make sure your resolvers actually get access to that magical and often-mentioned `prisma` client instance?
+
+### Attaching the generated Prisma client to context
+
+```cmd
+  npm i prisma-client-lib
+```
+
+This dependency is required to make the auto-generated Prisma client work.
+
+Now you can attach the generated `prisma` client instance to the `context` so that your resolvers get access to it.
+
+First, import the `prisma` client instance into `index.js`. At the top of the file, add the following import statement:
+
+```js
+const { prisma } = require('./generated/prisma-client')
+```
+
+Now you can attach it to the `context` when the `GraphQLServer` is being initialized.
+
+In `index.js`, update the instantiation of the `GraphQLServer` to look as follows:
+
+```js
+const server = new GraphQLServer({
+  typeDefs: './src/schema.graphql',
+  resolvers,
+  context: { prisma },
+})
+```
+
+The `context` object that’s passed into all your GraphQL resolvers is being initialized right here. Because you’re attaching the `prisma` client instance to it when the `GraphQLServer` is instantiated, you can access `context.prisma` in your resolvers.
+
+### Testing the new implementation
+
+With these code changes, you can now go ahead and test if the new implementation with a database works as expected. As usual, run the following command in your terminal to start the GraphQL server:
+
+```cmd
+  npm start
+```
+
+> Note: Because you’re using a demo database in Prisma Cloud, you can view the stored data in the [Prisma Cloud Console](https://app.prisma.io/).
+![Prisma Cloud Console Screenshot](https://imgur.com/ZXJ8RIY.png)
