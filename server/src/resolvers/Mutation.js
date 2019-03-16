@@ -38,8 +38,6 @@ async function login(parent, args, context, info) {
     throw new Error('No such user found')
   }
 
-  console.log(user.links)
-
   // The next step is to compare the provided password with the one that is stored
   // in the database. If the two don’t match, you’re returning an error as well.
   const valid = await bcrypt.compare(args.password, user.password)
