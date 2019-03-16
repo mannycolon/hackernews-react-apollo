@@ -163,3 +163,351 @@ type Link {
   postedBy: User
 }
 ```
+
+## Implementing the resolver functions
+
+After extending the schema definition with the new operations, you need to implement resolver functions for them. Before doing so, let’s actually refactor your code a bit to keep it more modular!
+
+You’ll pull out the resolvers for each type into their own files.
+
+First, create a new directory called `resolvers` and add four files to it: `Query.js`, `Mutation.js`, `User.js` and `Link.js`. You can do so with the following commands:
+
+```cmd
+  mkdir src/resolvers
+  touch src/resolvers/Query.js
+  touch src/resolvers/Mutation.js
+  touch src/resolvers/User.js
+  touch src/resolvers/Link.js
+```
+
+Next, move the implementation of the `feed` resolver into `Query.js`.
+
+In `Query.js`, add the following function definition:
+
+```js
+function feed(parent, args, context, info) {
+  return context.prisma.links()
+}
+
+module.exports = {
+  feed,
+}
+```
+
+This is pretty straighforward. You’re just reimplementing the same functionality from before with a dedicated function in a different file. The `Mutation` resolvers are next.
+
+## Adding authentication resolvers
+
+Open `Mutation.js` and add the new `login` and `signup` resolvers (you’ll add the `post` resolver in a bit):
+
+```js
+async function signup(parent, args, context, info) {
+  // 1
+  const password = await bcrypt.hash(args.password, 10)
+  // 2
+  const user = await context.prisma.createUser({ ...args, password })
+
+  // 3
+  const token = jwt.sign({ userId: user.id }, APP_SECRET)
+
+  // 4
+  return {
+    token,
+    user,
+  }
+}
+
+async function login(parent, args, context, info) {
+  // 1
+  const user = await context.prisma.user({ email: args.email })
+  if (!user) {
+    throw new Error('No such user found')
+  }
+
+  // 2
+  const valid = await bcrypt.compare(args.password, user.password)
+  if (!valid) {
+    throw new Error('Invalid password')
+  }
+
+  const token = jwt.sign({ userId: user.id }, APP_SECRET)
+
+  // 3
+  return {
+    token,
+    user,
+  }
+}
+
+module.exports = {
+  signup,
+  login,
+  post,
+}
+```
+
+Let’s use the good ol’ numbered comments again to understand what’s going on here - starting with `signup`.
+
+1. In the `signup` mutation, the first thing to do is encrypting the `User`’s password using the `bcryptjs` library which you’ll install soon.
+
+2. The next step is to use the `prisma` client instance to store the new `User` in the database.
+
+3. You’re then generating a JWT which is signed with an `APP_SECRET`. You still need to create this `APP_SECRET` and also install the `jwt` library that’s used here.
+
+4. Finally, you return the `token` and the `user` in an object that adheres to the shape of an `AuthPayload` object from your GraphQL schema.
+
+Now on the `login` mutation:
+
+1. Instead of creating a new `User` object, you’re now using the `prisma` client instance to retrieve the existing `User` record by the `email` address that was sent along as an argument in the `login` mutation. If no `User` with that email address was found, you’re returning a corresponding error.
+
+2. The next step is to compare the provided password with the one that is stored in the database. If the two don’t match, you’re returning an error as well.
+
+3. In the end, you’re returning `token` and `user` again.
+
+Let’s go and finish up the implementation.
+
+First, add the required dependencies to the project:
+
+```cmd
+  npm i jsonwebtoken bcryptjs
+```
+
+Next, you’ll create a few utilities that are being reused in a few places.
+
+Create a new file inside the `src` directory and call it `utils.js`:
+
+```cmd
+  touch src/utils.js
+```
+
+Now, add the following code to it:
+
+```js
+const jwt = require('jsonwebtoken')
+const APP_SECRET = 'GraphQL-is-aw3some'
+
+function getUserId(context) {
+  const Authorization = context.request.get('Authorization')
+  if (Authorization) {
+    const token = Authorization.replace('Bearer ', '')
+    const { userId } = jwt.verify(token, APP_SECRET)
+    return userId
+  }
+
+  throw new Error('Not authenticated')
+}
+
+module.exports = {
+  APP_SECRET,
+  getUserId,
+}
+```
+
+The `APP_SECRET` is used to sign the JWTs which you’re issuing for your users.
+
+The `getUserId` function is a helper function that you’ll call in resolvers which require authentication (such as `post`). It first retrieves the `Authorization` header (which contains the `User`’s JWT) from the `context`. It then verifies the JWT and retrieves the `User`’s ID from it. Notice that if that process is not successful for any reason, the function will throw an exception. You can therefore use it to “protect” the resolvers which require authentication.
+
+To make everything work, be sure to add the following import statements to the top of `Mutation.js`:
+
+```js
+const bcrypt = require('bcryptjs')
+const jwt = require('jsonwebtoken')
+const { APP_SECRET, getUserId } = require('../utils')
+```
+
+Right now, there’s one more minor issue. You’re accessing a `request` object on the `context`. However, when initializing the `context`, you’re really only attaching the `prisma` client instance to it - there’s no `request` object yet that could be accessed.
+
+To change this, open `index.js` and adjust the instantiation of the `GraphQLServer` as follows:
+
+```js
+const server = new GraphQLServer({
+  typeDefs: './src/schema.graphql',
+  resolvers,
+  context: request => {
+    return {
+      ...request,
+      prisma,
+    }
+  },
+})
+```
+
+Instead of attaching an object directly, you’re now creating the `context` as a function which returns the `context`. The advantage of this approach is that you can attach the HTTP request that carries the incoming GraphQL query (or mutation) to the `context` as well. This will allow your resolvers to read the `Authorization` header and validate if the user who submitted the request is eligible to perform the requested operation.
+
+## Requiring authentication for the post mutation
+
+Before you’re going to test your authentication flow, make sure to complete your schema/resolver setup. Right now the `post` resolver is still missing.
+
+In `Mutation.js`, add the following resolver implementation for `post`:
+
+```js
+function post(parent, args, context, info) {
+  const userId = getUserId(context)
+  return context.prisma.createLink({
+    url: args.url,
+    description: args.description,
+    postedBy: { connect: { id: userId } },
+  })
+}
+```
+
+Two things have changed in the implementation compared to the previous implementation in `index.js`:
+
+1. You’re now using the `getUserId` function to retrieve the ID of the `User`. This ID is stored in the JWT that’s set at the `Authorization` header of the incoming HTTP request. Therefore, you know which `User` is creating the `Link` here. Recall that an unsuccessful retrieval of the `userId` will lead to an exception and the function scope is exited before the `createLink` mutation is invoked. In that case, the GraphQL response will just contain an error indicating that the user was not authenticated.
+
+2. You’re then also using that `userId` to connect the `Link` to be created with the `User` who is creating it. This is happening through a [nested object write](https://www.prisma.io/docs/-rsc6#nested-object-writes).
+
+## Resolving relations
+
+There’s one more thing you need to do before you can launch the GraphQL server again and test the new functionality: Ensuring the relation between `User` and `Link` gets properly resolved.
+
+Notice how we’ve omitted all resolvers for scalar values from the `User` and `Link` types? These are following the simple pattern that we saw at the beginning of the tutorial:
+
+```js
+Link: {
+  id: parent => parent.id,
+  url: parent => parent.url,
+  description: parent => parent.description,
+}
+```
+
+However, we’ve now added two fields to our GraphQL schema that can not be resolved in the same way: `postedBy` on `Link` and `links` on `User`. These fields need to be explicitly implemented because our GraphQL server can not infer where to get that data from.
+
+To resolve the `postedBy` relation, open `Link.js` and add the following code to it:
+
+```js
+function postedBy(parent, args, context) {
+  return context.prisma.link({ id: parent.id }).postedBy()
+}
+
+module.exports = {
+  postedBy,
+}
+```
+
+In the `postedBy` resolver, you’re first fetching the `Link` using the `prisma` client instance and then invoke `postedBy` on it. Notice that the resolver needs to be called `postedBy` because it resolves the `postedBy` field from the `Link` type in `schema.graphql`.
+
+You can resolve the `links` relation in a similar way.
+
+Open `User.js` and add the following code to it:
+
+```js
+function links(parent, args, context) {
+  return context.prisma.user({ id: parent.id }).links()
+}
+
+module.exports = {
+  links,
+}
+```
+
+## Putting it all together
+
+Awesome! The last thing you need to do now is use the new resolver implementations in `index.js`.
+
+Open `index.js` and import the modules which now contain the resolvers at the top of the file:
+
+```js
+const Query = require('./resolvers/Query')
+const Mutation = require('./resolvers/Mutation')
+const User = require('./resolvers/User')
+const Link = require('./resolvers/Link')
+```
+
+Then, update the definition of the `resolvers` object to looks as follows:
+
+```js
+const resolvers = {
+  Query,
+  Mutation,
+  User,
+  Link
+}
+```
+
+## Testing the authentication flow
+
+The very first thing you’ll do is test the signup mutation and thereby create a new User in the database.
+
+Now, send the following mutation to create a new User:
+
+```js
+mutation {
+  signup(
+    name: "Alice"
+    email: "alice@prisma.io"
+    password: "graphql"
+  ) {
+    token
+    user {
+      id
+    }
+  }
+}
+```
+
+From the server’s response, copy the authentication `token` and open another tab in the Playground. Inside that new tab, open the **HTTP HEADERS** pane in the bottom-left corner and specify the `Authorization` header - similar to what you did with the Prisma Playground before. Replace the `__TOKEN__` placeholder in the following snippet with the copied token:
+
+```json
+{
+  "Authorization": "Bearer __TOKEN__"
+}
+```
+
+Whenever you’re now sending a query/mutation from that tab, it will carry the authentication token.
+
+With the `Authorization` header in place, send the following to your GraphQL server:
+
+```js
+mutation {
+  post(
+    url: "www.graphqlconf.org"
+    description: "An awesome GraphQL conference"
+  ) {
+    id
+  }
+}
+```
+
+When your server receives this mutation, it invokes the post resolver and therefore validates the provided JWT. Additionally, the new Link that was created is now connected to the User for which you previously sent the signup mutation.
+
+To verify everything worked, you can send the following login mutation:
+
+```js
+mutation {
+  login(
+    email: "alice@prisma.io"
+    password: "graphql"
+  ) {
+    token
+    user {
+      email
+      links {
+        url
+        description
+      }
+    }
+  }
+}
+```
+
+This will return a response similar to this:
+
+```json
+{
+  "data": {
+    "login": {
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJjanBzaHVsazJoM3lqMDk0NzZzd2JrOHVnIiwiaWF0IjoxNTQ1MDYyNTQyfQ.KjGZTxr1jyJH7HcT_0glRInBef37OKCTDl0tZzogekw",
+      "user": {
+        "email": "alice@prisma.io",
+        "links": [
+          {
+            "url": "www.graphqlconf.org",
+            "description": "An awesome GraphQL conference"
+          }
+        ]
+      }
+    }
+  }
+}
+```
