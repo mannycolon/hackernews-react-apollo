@@ -649,3 +649,278 @@ mutation {
 Now observe the Playground where the subscription was running:
 
 ![newLink received](https://imgur.com/0BJQhWj.png)
+
+## Adding a voting feature
+
+Implementing a `vote` mutation:
+
+The next feature to be added is a voting feature which lets users upvote certain links. The very first step here is to extend your Prisma datamodel to represent votes in the database.
+
+Open `prisma/datamodel.prisma` and adjust it to look as follows:
+
+```js
+type Link {
+  id: ID! @unique
+  createdAt: DateTime!
+  description: String!
+  url: String!
+  postedBy: User
+  votes: [Vote!]!
+}
+
+type User {
+  id: ID! @unique
+  name: String!
+  email: String! @unique
+  password: String!
+  links: [Link!]!
+  votes: [Vote!]!
+}
+
+type Vote {
+  id: ID! @unique
+  link: Link!
+  user: User!
+}
+```
+
+As you can see, you added a new `Vote` type to the datamodel. It has one-to-many relationships to the `User` and the `Link` type.
+
+To apply the changes and update your Prisma client API so it includes CRUD operations for the new `Vote` type, you need to deploy the service again.
+
+Run the following command in your terminal:
+
+```bash
+  prisma deploy
+```
+
+Thanks to the post-deploy hook, you don’t need to manually run `prisma generate` again to update your Prisma client.
+
+Now, with the process of schema-driven development in mind, go ahead and extend the schema definition of your application schema so that your GraphQL server also exposes a `vote` mutation:
+
+```js
+type Mutation {
+  post(url: String!, description: String!): Link!
+  signup(email: String!, password: String!, name: String!): AuthPayload
+  login(email: String!, password: String!): AuthPayload
+  vote(linkId: ID!): Vote
+}
+```
+
+The referenced `Vote` type also needs to be defined in the GraphQL schema:
+
+```js
+type Vote {
+  id: ID!
+  link: Link!
+  user: User!
+}
+```
+
+It should also be possible to query all the `votes` from a `Link`, so you need to adjust the `Link` type in `schema.graphql` as well.
+
+Open `schema.graphql` and add the `votes` field to `Link`:
+
+```js
+type Link {
+  id: ID!
+  description: String!
+  url: String!
+  postedBy: User
+  votes: [Vote!]!
+}
+```
+
+You know what’s next: Implementing the corresponding resolver functions.
+
+Add the following function to `src/resolvers/Mutation.js`:
+
+```js
+async function vote(parent, args, context, info) {
+  // 1
+  const userId = getUserId(context)
+
+  // 2
+  const linkExists = await context.prisma.$exists.vote({
+    user: { id: userId },
+    link: { id: args.linkId },
+  })
+  if (linkExists) {
+    throw new Error(`Already voted for link: ${args.linkId}`)
+  }
+
+  // 3
+  return context.prisma.createVote({
+    user: { connect: { id: userId } },
+    link: { connect: { id: args.linkId } },
+  })
+}
+```
+
+Here is what’s going on:
+
+1. Similar to what you’re doing in the `post` resolver, the first step is to validate the incoming JWT with the `getUserId` helper function. If it’s valid, the function will return the `userId` of the `User` who is making the request. If the JWT is not valid, the function will throw an exception.
+
+1. The `prisma.$exists.vote(...)` function call is new for you. The `prisma` client instance not only exposes CRUD methods for your models, it also generates one `$exists` function per model. The `$exists` function takes a `where` filter object that allows to specify certain conditions about elements of that type. Only if the condition applies to at least one element in the database, the `$exists` function returns `true`. In this case, you’re using it to verify that the requesting `User` has not yet voted for the `Link` that’s identified by `args.linkId`.
+
+1. If `exists` returns false, the `createVote` method will be used to create a new `Vote` that’s connected to the `User` and the `Link`.
+
+Also, don’t forget to adjust the export statement to include the `vote` resolver in the module:
+
+```js
+module.exports = {
+  post,
+  signup,
+  login,
+  vote,
+}
+```
+
+You also need to account for the new relations in your GraphQL schema:
+
+- `votes` on `Link`
+- `user` on `Vote`
+- `link` on `Vote`
+
+Similar to before, you need to implement resolvers for these.
+
+Open `Link.js` and add the following function to it:
+
+```js
+function votes(parent, args, context) {
+  return context.prisma.link({ id: parent.id }).votes()
+}
+```
+
+Don’t forget to include the new resolver in the exports:
+
+```js
+module.exports = {
+  postedBy,
+  votes,
+}
+```
+
+Finally you need to resolve the relations from the `Vote` type.
+
+Create a new file called `Vote.js` inside `resolvers`:
+
+```bash
+  touch src/resolvers/Vote.js
+```
+
+Now add the following code to it:
+
+```js
+function link(parent, args, context) {
+  return context.prisma.vote({ id: parent.id }).link()
+}
+
+function user(parent, args, context) {
+  return context.prisma.vote({ id: parent.id }).user()
+}
+
+module.exports = {
+  link,
+  user,
+}
+```
+
+Finally the `Vote` resolver needs to be included in the main `resolvers` object in `index.js`.
+
+Open `index.js` and add a new import statement to its top:
+
+```js
+const Vote = require('./resolvers/Vote')
+```
+
+Finally, include the `Vote` resolver in the `resolvers` object:
+
+```js
+const resolvers = {
+  Query,
+  Mutation,
+  Subscription,
+  User,
+  Link,
+  Vote,
+}
+```
+
+## Subscribing to new votes
+
+The last task in this chapter is to add a subscription that fires when new `Vote`s are being created. You’ll use an analogous approach as for the `newLink` query for that.
+
+Add a new field to the `Subscription` type of your GraphQL schema:
+
+```js
+type Subscription {
+  newLink: Link
+  newVote: Vote
+}
+```
+
+Next, you need to add the subscription resolver function.
+
+Add the following code to `Subscription.js`:
+
+```js
+function newVoteSubscribe(parent, args, context, info) {
+  return context.prisma.$subscribe.vote({ mutation_in: ['CREATED'] }).node()
+}
+
+const newVote = {
+  subscribe: newVoteSubscribe,
+  resolve: payload => {
+    return payload
+  },
+}
+```
+
+And update the export statement of the file accordingly:
+
+```js
+module.exports = {
+  newLink,
+  newVote,
+}
+```
+
+All right, that’s it! You can now test the implementation of your `newVote` subscription.
+
+> If you haven’t done so already, stop and restart the server by first killing it with CTRL+C, then run `node src/index.js`. Afterwards, open a new Playground with the GraphQL CLI by running `graphql playground`.
+
+You can use the following subscription for that:
+
+```js
+subscription {
+  newVote {
+    id
+    link {
+      url
+      description
+    }
+    user {
+      name
+      email
+    }
+  }
+}
+```
+
+If you’re unsure about writing one yourself, here’s a sample `vote` mutation you can use. You’ll need to replace the `__LINK_ID__` placeholder with the `id` of an actual `Link` from your database. Also, make sure that you’re authenticated when sending the mutation.
+
+```js
+mutation {
+  vote(linkId: "__LINK_ID__") {
+    link {
+      url
+      description
+    }
+    user {
+      name
+      email
+    }
+  }
+}
+```
