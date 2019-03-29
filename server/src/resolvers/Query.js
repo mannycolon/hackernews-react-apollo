@@ -1,5 +1,16 @@
 function feed (parent, args, context, info) {
-  return context.prisma.links()
+  const where = args.filter ? {
+    OR: [
+      { description_contains: args.filter },
+      { url_contains: args.filter },
+    ]
+  } : {}
+
+  const links = context.prisma.links({
+    where
+  })
+
+  return links
 }
 
 module.exports = {

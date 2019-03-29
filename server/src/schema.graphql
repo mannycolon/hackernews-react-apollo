@@ -1,7 +1,7 @@
 
 type Query {
   info: String!
-  feed: [Link!]!
+  feed(filter: String): [Link!]!
   link(id: String!): Link! # Fetch a single link by its `id`
 }
 
